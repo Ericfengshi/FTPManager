@@ -90,6 +90,8 @@
 //
 
 #import "FTPManager.h"
+#include <ifaddrs.h>
+#include <arpa/inet.h>
 
 #define And(val1, val2) { val1 = val1 && val2; }
 #define AndV(val1, val2, message) { And(val1, val2); if (!val2) NSLog(message); }
@@ -815,8 +817,8 @@
         wdir = [wdirs cStringUsingEncoding:NSUTF8StringEncoding];
         chdir = YES;
     }
-    char cmd[256];
-    ssize_t n;
+
+    /*  //iPV4 only
     struct sockaddr_in serv_addr;
     struct hostent *srv;
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -835,17 +837,73 @@
           (char*)&serv_addr.sin_addr.s_addr,
           srv->h_length);
     serv_addr.sin_port = htons(server.port);
-    if (connect(sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+    int result = connect(sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
+    if (result < 0) {
         NSLog(@"error connecting.");
         return NO;
     }
+    */
+    
+    /******************iPV4/iPV6 start******************/
+    
+    NSData *addr4, *addr6;
+    BOOL isAddr4 = NO;
+    struct addrinfo hints, *res, *res0;
+    int sockfd = -1;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = PF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_DEFAULT;
+    NSString *portStr = [NSString stringWithFormat:@"%d", server.port];
+    int error = getaddrinfo(host, [portStr UTF8String], &hints, &res0);
+    if (error) {
+        NSLog(@"host error!");
+        return NO;
+    } else {
+        for (res = res0; res; res = res->ai_next) {
+            if (res->ai_family == AF_INET) {
+                // Found IPv4 address
+                isAddr4 = YES;
+                sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+                addr4 = [NSData dataWithBytes:res->ai_addr length:res->ai_addrlen];
+                NSString *addressIP4 = [self formatIPV4Address:((struct sockaddr_in *)res->ai_addr)->sin_addr];
+                NSLog(@"ip4 address: %@", addressIP4);
+            } else if (res->ai_family == AF_INET6) {
+                // Found IPv6 address
+                isAddr4 = NO;
+                sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+                addr6 = [NSData dataWithBytes:res->ai_addr length:res->ai_addrlen];
+                NSString *addressIP6 = [self formatIPV6Address:((struct sockaddr_in6 *)res->ai_addr)->sin6_addr];
+                NSLog(@"ip6 address: %@", addressIP6);
+            }
+        }
+        freeaddrinfo(res0);
+    }
+    
+    if (sockfd < 0) {
+        NSLog(@"could not open socket!");
+        return NO;
+    }
+    
+    NSData *address = isAddr4 ? addr4 : addr6;
+    const struct sockaddr *addr = (const struct sockaddr *)[address bytes];
+    int result = connect(sockfd, addr, addr->sa_len);
+    if (result < 0) {
+        NSLog(@"error connecting.");
+        return NO;
+    }
+
+    /******************iPV4/iPV6 end******************/
+    
+    
     //it is very easy to connect to the control connection of an ftp server,
     //as it is based on the Telnet protocol.
     
     //at this point, there is a connection.
     //we now send login commands
+    char cmd[256];
     sprintf(cmd, "USER %s\r\n", user);
-    n = write(sockfd, cmd, strlen(cmd));
+    ssize_t n = write(sockfd, cmd, strlen(cmd));
     if (n < 0) return NO;
     bzero(cmd, 256);
     sprintf(cmd, "PASS %s\r\n", pass);
@@ -887,6 +945,45 @@
     action = _FMCurrentActionNone;
     
     return streamSuccess;
+}
+
+#pragma mark - IP address
+/**
+ for IPV6
+ 
+ @param ipv6Addr
+ @return NSString
+ */
+- (NSString *)formatIPV6Address:(struct in6_addr)ipv6Addr{
+    NSString *address = nil;
+    
+    char dstStr[INET6_ADDRSTRLEN];
+    char srcStr[INET6_ADDRSTRLEN];
+    memcpy(srcStr, &ipv6Addr, sizeof(struct in6_addr));
+    if(inet_ntop(AF_INET6, srcStr, dstStr, INET6_ADDRSTRLEN) != NULL){
+        address = [NSString stringWithUTF8String:dstStr];
+    }
+    
+    return address;
+}
+
+/**
+ for IPV4
+ 
+ @param ipv4Addr
+ @return NSString
+ */
+- (NSString *)formatIPV4Address:(struct in_addr)ipv4Addr{
+    NSString *address = nil;
+    
+    char dstStr[INET_ADDRSTRLEN];
+    char srcStr[INET_ADDRSTRLEN];
+    memcpy(srcStr, &ipv4Addr, sizeof(struct in_addr));
+    if(inet_ntop(AF_INET, srcStr, dstStr, INET_ADDRSTRLEN) != NULL){
+        address = [NSString stringWithUTF8String:dstStr];
+    }
+    
+    return address;
 }
 
 @end
@@ -974,4 +1071,5 @@
         return [u substringFromIndex:fs.location+1];
     }
 }
+
 @end
